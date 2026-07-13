@@ -135,7 +135,8 @@ config:
       checkpoint_vae: true
       train_modules: qkvo
       save_images_every: 10
-      save_every: 15
+      save_every: 10
+      save_after_step: 200
       prompts: null
       prompts_path: null
       reward:

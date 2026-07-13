@@ -847,7 +847,7 @@ export default function SimpleJob({
                     draftProcess.type = 'krea2_draft_trainer';
                     draftProcess.draft = {
                       num_reward_steps: 60,
-                      save_every: 15,
+                      save_every: 10,
                       reward: {
                         reference_images: p0.datasets?.[0]?.folder_path ?? null,
                         face_weight: 1.0,

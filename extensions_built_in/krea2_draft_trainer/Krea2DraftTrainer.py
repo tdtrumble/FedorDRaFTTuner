@@ -28,8 +28,8 @@ Config (all under the process dict):
                             # tensors receive optimizer updates; all = every
                             # adapter tensor (LoRA and LoKr alike)
     save_images_every: 10   # dump reward images to <save>/draft_step_images
-    save_every: 15          # checkpoint every N steps after save_after_step
-    save_after_step: null   # defaults to the SFT stage end (resume start_step)
+    save_every: 10          # checkpoint every N steps after save_after_step
+    save_after_step: null   # defaults to the SFT stage end (e.g. 200)
     prompts:                # explicit prompt list, or...
       - "tok portrait photo, natural light"
     prompts_path: null      # ...a txt file (one prompt per line), or fall
@@ -105,11 +105,7 @@ class Krea2DraftTrainer(DiffusionTrainer):
         if self.draft_train_modules not in {"qkvo", "all"}:
             raise ValueError("draft.train_modules must be 'qkvo' or 'all'")
         self.draft_save_images_every = int(draft.get("save_images_every", 10))
-        draft_save_every = int(draft.get("save_every", 15))
-        # early UI jobs shipped with save_every: 5; DRaFT checkpoints are every 15
-        if draft_save_every == 5:
-            draft_save_every = 15
-        self.draft_save_every = draft_save_every
+        self.draft_save_every = int(draft.get("save_every", 10))
         self._draft_save_after_step_conf = draft.get("save_after_step", None)
         self._draft_save_after_step = 0
         self._draft_prompts_conf = draft.get("prompts", None)

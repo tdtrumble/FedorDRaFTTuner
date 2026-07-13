@@ -37,7 +37,7 @@ const syncDraftStages = (jobConfig: any) => {
     const reward = draft.reward || {};
     const rewardSteps = Number(draft.num_reward_steps ?? 60);
     const sftSteps = Number(p0.train?.steps ?? 0);
-    const draftSaveEvery = 15;
+    const draftSaveEvery = 10;
     p.save = {
       ...clone(p0.save),
       save_every: 0,
