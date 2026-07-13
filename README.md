@@ -1,3 +1,5 @@
+<img width="1388" height="914" alt="Screenshot 2026-07-13 195305" src="https://github.com/user-attachments/assets/f4abdc85-acad-4e71-8473-957aef3c57a9" />
+
 # FedorAiToolkit
 
 A fork of [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit) that adds **DRaFT-K reward training for Krea 2**: after a normal SFT stage, the LoRA/LoKr is optimized *directly* on differentiable rewards — face identity and body geometry — computed on images the model generates during training. Everything upstream (all models, the UI, normal training) works unchanged.
