@@ -32,9 +32,34 @@ LoRA or LoKr on Krea 2   -- resumed -->          v
 
 ### Extra requirements for the body reward
 
-- `pip install py-soma-x warp-lang insightface onnx onnxruntime-gpu` (plus SAM 3D Body's deps)
-- A clone of [facebookresearch/sam-3d-body](https://github.com/facebookresearch/sam-3d-body) at `repositories/sam-3d-body`
-- The gated [facebook/sam-3d-body-vith](https://huggingface.co/facebook/sam-3d-body-vith) checkpoint (request access, set `HF_TOKEN`, or place it at `models/sam-3d-body-vith/`)
+Body training (the SAM 3D Body mesh reward in the DRaFT stage) does **not** work out of the box. You must set up Meta's SAM 3D Body checkpoint first. Face-only DRaFT works without it — if the checkpoint is missing, body reward is skipped and training continues on face identity only.
+
+**Before you enable body training:**
+
+1. **Request access** on Hugging Face — the checkpoint is gated:
+   - [facebook/sam-3d-body-vith](https://huggingface.co/facebook/sam-3d-body-vith) (recommended)
+   - Approval can take a little while; you cannot download until Meta grants access.
+2. **Log in** with a token that has read access:
+   ```bash
+   hf auth login
+   ```
+   Or set `HF_TOKEN` in your environment.
+3. **Clone the SAM 3D Body code** (not on PyPI):
+   ```bash
+   git clone https://github.com/facebookresearch/sam-3d-body repositories/sam-3d-body
+   ```
+4. **Download the checkpoint** — on first body-reward run it auto-downloads via the Hugging Face hub if you are authenticated. Or prefetch manually:
+   ```bash
+   hf download facebook/sam-3d-body-vith --local-dir models/sam-3d-body-vith
+   ```
+   Expected layout: `models/sam-3d-body-vith/model.ckpt` and `models/sam-3d-body-vith/assets/mhr_model.pt`.
+
+**Other deps:**
+
+- `pip install py-soma-x warp-lang insightface onnx onnxruntime-gpu` (plus SAM 3D Body's deps from its repo)
+- Optional: `pip install pyrender` if you want mesh overlay exports from `scripts/export_sam_body_scans.py`
+
+Without the checkpoint, you can still run Stage 1 (SFT) and face-only DRaFT (`body_weight: 0`). Set `body_weight` > 0 only after SAM 3D Body is installed and downloaded.
 
 ### Running a two-stage training
 
