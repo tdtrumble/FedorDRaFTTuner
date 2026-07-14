@@ -2,12 +2,64 @@
 
 # FedorAiToolkit
 
-A fork of [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit) that adds **DRaFT-K reward training for Krea 2**: after a normal SFT stage, the LoRA/LoKr is optimized *directly* on differentiable rewards — face identity and body geometry — computed on images the model generates during training. Everything upstream (all models, the UI, normal training) works unchanged.
+A fork of [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit) that adds **DRaFT-K reward training for Krea 2**: after a normal SFT stage, the LoRA/LoKr is optimized *directly* on differentiable rewards — face identity and body geometry — computed on images the model generates during training. Everything upstream (all models, the UI, normal training) works unchanged. **Ideogram 4 DRaFT is in progress.**
+
+## Quick start
+
+**Already running stock ai-toolkit?** Clone this fork into its **own folder** — do not mix it with your existing install. Each copy needs its own `venv`.
+
+```bash
+git clone https://github.com/CliffNodes/FedorAiToolkit.git
+cd FedorAiToolkit
+```
+
+### One-time setup (Windows)
+
+```bat
+python -m venv venv
+venv\Scripts\activate
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt
+```
+
+Linux/macOS: same flow with `python3 -m venv venv` and `source venv/bin/activate`. See the upstream README below for pinned torch versions and platform notes.
+
+Optional shortcut: if you use a `.bat` to start stock ai-toolkit, duplicate it and change every path from your old folder to `FedorAiToolkit`.
+
+### Launch the UI
+
+Requires [Node.js](https://nodejs.org/) 20+.
+
+```bat
+cd ui
+npm run build_and_start
+```
+
+Open **http://localhost:8675**. Create a job → pick **Krea 2** → enable **Face / Body Reward Stage (DRaFT)**. The UI only needs to run while you start or monitor jobs; training continues if you close the browser.
+
+### Train from the command line
+
+```bat
+venv\Scripts\activate
+python run.py config/examples/krea2_lokr_draft.yaml
+```
+
+Edit the yaml first: set `trigger_word`, point `datasets` and `draft.reward.reference_images` at your image folder (photos + matching `.txt` captions).
+
+### Example configs
+
+| Config | GPU | Notes |
+|---|---|---|
+| `config/examples/krea2_lokr_draft.yaml` | 24–32 GB | LoKr + face/body DRaFT (reference) |
+| `config/examples/krea2_lora_draft.yaml` | 24–32 GB | LoRA + face/body DRaFT |
+| `config/examples/krea2_lokr_draft_5060_8gb.yaml` | ~8 GB (RTX 5060) | 512-only, low VRAM, **face-only** DRaFT (`body_weight: 0`) |
+
+Face-only DRaFT works without SAM 3D Body. Full body reward needs extra setup — see below.
 
 ## What this fork adds
 
 ```
-Stage 1 (SFT, stock ai-toolkit)          Stage 2 (new: krea2_draft_trainer)
+Stage 1 (SFT, stock ai-toolkit)          Stage 2 (krea2_draft_trainer)
 subject image dataset                    differentiable sampling
         |                                (grad through last K flow steps
         v                                 + checkpointed VAE decode)
@@ -24,11 +76,11 @@ LoRA or LoKr on Krea 2   -- resumed -->          v
 
 | Piece | Where | What it does |
 |---|---|---|
-| `krea2_draft_trainer` | `extensions_built_in/krea2_draft_trainer/` | New process type extending `SDTrainer`. Ports the DRaFT-K loop from [KONAKONA666/krea-2](https://github.com/KONAKONA666/krea-2) (Apache-2.0) onto ai-toolkit's Krea 2 pipeline: no-grad for the first `steps - draft_k` denoising steps, gradient through the last K + VAE decode, optional DRaFT-LV samples. Resumes SFT-trained LoRA **and** LoKr networks; `draft.train_modules: qkvo` restricts optimizer updates to attention q/k/v/o adapter tensors. |
+| `krea2_draft_trainer` | `extensions_built_in/krea2_draft_trainer/` | DRaFT-K for Krea 2. Ports the loop from [KONAKONA666/krea-2](https://github.com/KONAKONA666/krea-2) (Apache-2.0): no-grad for the first `steps - draft_k` denoising steps, gradient through the last K + VAE decode, optional DRaFT-LV samples. Resumes SFT-trained LoRA **and** LoKr; `draft.train_modules: qkvo` restricts updates to attention wq/wk/wv/wo adapters. |
 | Face reward | `toolkit/rewards/face.py` | Vendored differentiable `FaceSimilarityReward` (ArcFace/antelopev2, auto-downloads). Saturated centroid reward vs your reference images, EOT augmentations, anti-copy entropy, duplicate-identity penalty. |
 | Body reward | `toolkit/rewards/body.py` | New `BodyGeometryReward`: SAM 3D Body regresses MHR shape params from generated images *with gradients*, SOMA-X maps them to canonical neutral-pose vertices, compared pose-independently against a prototype built from your reference images. Pose is discarded by design — only build/proportions/height are rewarded. Tier-2 fallback compares raw shape params if the Warp vertex path is unavailable. |
 | Combined reward | `toolkit/rewards/combined.py` | `face_weight * face + body_weight * body`, degrades gracefully to face-only when the gated SAM 3D Body checkpoint is missing. |
-| Example configs | `config/examples/krea2_lokr_draft.yaml`, `krea2_lora_draft.yaml` | Two-stage (SFT then DRaFT) reference configs for LoKr and LoRA. |
+| Example configs | `config/examples/krea2_lokr_draft.yaml`, `krea2_lora_draft.yaml`, `krea2_lokr_draft_5060_8gb.yaml` | Two-stage (SFT then DRaFT) reference configs for LoKr/LoRA on Krea 2. |
 
 ### Extra requirements for the body reward
 
@@ -68,7 +120,7 @@ Without the checkpoint, you can still run Stage 1 (SFT) and face-only DRaFT (`bo
 python run.py config/examples/krea2_lokr_draft.yaml
 ```
 
-Point `datasets` / `draft.reward.reference_images` at your dataset, set your trigger word, and adjust `draft.reward.face_weight` / `body_weight`. VRAM note: face-only DRaFT at 512px fits easily on a 24 GB card; face+body needs ~32 GB and benefits from closing other GPU apps.
+Point `datasets` / `draft.reward.reference_images` at your dataset, set your trigger word, and adjust `draft.reward.face_weight` / `body_weight`. Stage 2 reward steps are typically **15–60** (`draft.num_reward_steps` in the UI). VRAM note: face-only DRaFT at 512px fits easily on a 24 GB card; face+body needs ~32 GB on Krea 2 — use `low_vram: true`, qfloat8, and close other GPU apps.
 
 ---
 
