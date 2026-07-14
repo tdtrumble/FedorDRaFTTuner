@@ -117,3 +117,39 @@ export const getTotalSteps = (job: Job) => {
   // is the job total
   return Math.max(...jobConfig.config.process.map(p => p.train?.steps || 0), 0);
 };
+
+const ACTIVE_JOB_STATUSES = new Set(['running', 'queued', 'stopping']);
+
+export const getJobElapsedMs = (job: Job, nowMs: number = Date.now()) => {
+  const startedMs = new Date(job.created_at).getTime();
+  if (Number.isNaN(startedMs)) {
+    return 0;
+  }
+  if (ACTIVE_JOB_STATUSES.has(job.status)) {
+    return Math.max(0, nowMs - startedMs);
+  }
+  const endedMs = new Date(job.updated_at).getTime();
+  if (Number.isNaN(endedMs)) {
+    return Math.max(0, nowMs - startedMs);
+  }
+  return Math.max(0, endedMs - startedMs);
+};
+
+export const formatElapsed = (elapsedMs: number) => {
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, '0')}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+  }
+  return `${seconds}s`;
+};

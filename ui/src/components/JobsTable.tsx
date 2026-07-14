@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import useJobsList from '@/hooks/useJobsList';
 import Link from 'next/link';
 import UniversalTable, { TableColumn } from '@/components/UniversalTable';
@@ -11,7 +11,7 @@ import { startQueue, stopQueue } from '@/utils/queue';
 import { CgSpinner } from 'react-icons/cg';
 import useGPUInfo from '@/hooks/useGPUInfo';
 import { openConfirm } from '@/components/ConfirmModal';
-import { deleteJob, getTotalSteps, stopJob } from '@/utils/jobs';
+import { deleteJob, formatElapsed, getJobElapsedMs, getTotalSteps, stopJob } from '@/utils/jobs';
 import { Trash2 } from 'lucide-react';
 
 interface JobsTableProps {
@@ -26,6 +26,16 @@ export default function JobsTable({ onlyActive = false, job_type = null }: JobsT
   const { gpuList, isGPUInfoLoaded } = useGPUInfo();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const hasActiveJobs = jobs.some(job => ['running', 'queued', 'stopping'].includes(job.status));
+  useEffect(() => {
+    if (!hasActiveJobs) {
+      return;
+    }
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasActiveJobs]);
 
   const refresh = () => {
     refreshJobs();
@@ -192,6 +202,12 @@ export default function JobsTable({ onlyActive = false, job_type = null }: JobsT
       title: 'Info',
       key: 'info',
       className: 'truncate max-w-xs',
+    },
+    {
+      title: 'Elapsed',
+      key: 'elapsed',
+      className: 'whitespace-nowrap text-xs text-gray-400',
+      render: row => formatElapsed(getJobElapsedMs(row, nowMs)),
     },
     {
       title: 'Actions',
