@@ -50,7 +50,7 @@ Edit the yaml first: set `trigger_word`, point `datasets` and `draft.reward.refe
 
 | Config | GPU | Notes |
 |---|---|---|
-| `config/examples/krea2_lokr_draft.yaml` | 24–32 GB | LoKr + face/body DRaFT (reference) |
+| `config/examples/krea2_lokr_draft.yaml` | 24–32 GB | LoKr + face/body DRaFT (reference; see [CHANGELOG.md](CHANGELOG.md) for speed defaults) |
 | `config/examples/krea2_lora_draft.yaml` | 24–32 GB | LoRA + face/body DRaFT |
 | `config/examples/krea2_lokr_draft_5060_8gb.yaml` | ~8 GB (RTX 5060) | 512-only, low VRAM, **face-only** DRaFT (`body_weight: 0`) |
 

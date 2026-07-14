@@ -131,9 +131,9 @@ config:
       checkpoint_vae: true
       train_modules: qkvo
       save_images_every: 0
-      save_every: 15
+      save_every: 5
       save_after_step: 200
-      num_reward_steps: 12
+      num_reward_steps: 10
       final_sample_width: 512
       final_sample_height: 512
       final_sample_steps: 16
@@ -154,7 +154,7 @@ config:
           sam3d_hf_repo: facebook/sam-3d-body-vith
     train:
       batch_size: 1
-      steps: 212
+      steps: 210
       gradient_accumulation: 1
       train_unet: true
       train_text_encoder: false

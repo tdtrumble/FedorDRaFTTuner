@@ -36,7 +36,7 @@ const draftStageDefaults = (type: string) => {
     checkpoint_vae: true,
     train_modules: 'qkvo',
     save_images_every: 0,
-    save_every: 15,
+    save_every: 5,
   };
 };
 
@@ -69,9 +69,9 @@ const syncDraftStages = (jobConfig: any) => {
 
     const draft = p.draft || {};
     const reward = draft.reward || {};
-    const rewardSteps = Number(draft.num_reward_steps ?? 12);
+    const rewardSteps = Number(draft.num_reward_steps ?? 10);
     const sftSteps = Number(p0.train?.steps ?? 0);
-    const draftSaveEvery = 15;
+    const draftSaveEvery = 5;
     p.save = {
       ...clone(p0.save),
       save_every: 0,

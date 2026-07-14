@@ -849,8 +849,8 @@ export default function SimpleJob({
                         ? 'ideogram4_draft_trainer'
                         : 'krea2_draft_trainer';
                     draftProcess.draft = {
-                      num_reward_steps: 12,
-                      save_every: 15,
+                      num_reward_steps: 10,
+                      save_every: 5,
                       reward: {
                         reference_images: p0.datasets?.[0]?.folder_path ?? null,
                         face_weight: 1.0,
@@ -874,7 +874,7 @@ export default function SimpleJob({
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 pt-2">
                     <NumberInput
                       label="Reward Steps"
-                      value={jobConfig.config.process[1].draft?.num_reward_steps ?? 12}
+                      value={jobConfig.config.process[1].draft?.num_reward_steps ?? 10}
                       onChange={value => setJobConfig(value, 'config.process[1].draft.num_reward_steps')}
                       placeholder="eg. 60"
                       min={1}
