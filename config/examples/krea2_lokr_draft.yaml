@@ -124,7 +124,7 @@ config:
       save_format: diffusers
       push_to_hub: false
     draft:
-      steps: 12
+      steps: 8
       draft_k: 1
       guidance_scale: 4.5
       width: 512
@@ -134,9 +134,14 @@ config:
       seed: 42
       checkpoint_vae: true
       train_modules: qkvo
-      save_images_every: 10
-      save_every: 10
+      save_images_every: 0
+      save_every: 15
       save_after_step: 200
+      num_reward_steps: 12
+      final_sample_width: 512
+      final_sample_height: 512
+      final_sample_steps: 16
+      final_sample_count: 1
       prompts: null
       prompts_path: null
       reward:
@@ -146,13 +151,14 @@ config:
         face:
           target_similarity: 0.45
           providers:
+          - CUDAExecutionProvider
           - CPUExecutionProvider
         body:
           loss_tier: somax
           sam3d_hf_repo: facebook/sam-3d-body-vith
     train:
       batch_size: 1
-      steps: 60
+      steps: 212
       gradient_accumulation: 1
       train_unet: true
       train_text_encoder: false
@@ -191,18 +197,16 @@ config:
       layer_offloading_transformer_percent: 1
     sample:
       sampler: flowmatch
-      sample_every: 20
-      width: 1024
-      height: 1024
+      sample_every: 999999
+      width: 512
+      height: 512
       samples:
       - prompt: tok portrait photo, natural light, neutral background
-      - prompt: tok full body, casual outfit, standing outdoors
-      - prompt: tok close-up, soft studio lighting
       neg: ''
       seed: 42
       walk_seed: false
       guidance_scale: 4
-      sample_steps: 30
+      sample_steps: 16
       num_frames: 1
       fps: 1
 meta:

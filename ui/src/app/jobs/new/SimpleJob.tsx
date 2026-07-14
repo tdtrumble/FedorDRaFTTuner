@@ -833,7 +833,7 @@ export default function SimpleJob({
             </div>
           </Card>
         </div>
-        {modelArch?.name?.startsWith('krea2') && (
+        {(modelArch?.name?.startsWith('krea2') || modelArch?.name === 'ideogram4') && (
           <div>
             <Card title="Face / Body Reward Stage (DRaFT)">
               <Checkbox
@@ -844,10 +844,13 @@ export default function SimpleJob({
                   if (value && processes.length < 2) {
                     const p0 = processes[0];
                     const draftProcess: any = objectCopy(p0);
-                    draftProcess.type = 'krea2_draft_trainer';
+                    draftProcess.type =
+                      modelArch?.name === 'ideogram4'
+                        ? 'ideogram4_draft_trainer'
+                        : 'krea2_draft_trainer';
                     draftProcess.draft = {
-                      num_reward_steps: 60,
-                      save_every: 10,
+                      num_reward_steps: 12,
+                      save_every: 15,
                       reward: {
                         reference_images: p0.datasets?.[0]?.folder_path ?? null,
                         face_weight: 1.0,
@@ -871,7 +874,7 @@ export default function SimpleJob({
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 pt-2">
                     <NumberInput
                       label="Reward Steps"
-                      value={jobConfig.config.process[1].draft?.num_reward_steps ?? 60}
+                      value={jobConfig.config.process[1].draft?.num_reward_steps ?? 12}
                       onChange={value => setJobConfig(value, 'config.process[1].draft.num_reward_steps')}
                       placeholder="eg. 60"
                       min={1}
