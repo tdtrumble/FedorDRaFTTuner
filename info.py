@@ -2,8 +2,8 @@ from collections import OrderedDict
 from version import VERSION
 
 v = OrderedDict()
-v["name"] = "ai-toolkit"
-v["repo"] = "https://github.com/ostris/ai-toolkit"
+v["name"] = "Fedor DRaFT Tuner"
+v["repo"] = "https://github.com/tdtrumble/FedorDRaFTTuner"
 v["version"] = VERSION
 
 software_meta = v

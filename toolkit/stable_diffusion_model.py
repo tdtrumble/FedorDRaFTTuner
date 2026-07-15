@@ -60,7 +60,6 @@ from transformers import T5EncoderModel, BitsAndBytesConfig, UMT5EncoderModel, T
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPTextModelWithProjection
 
 from toolkit.paths import ORIG_CONFIGS_ROOT, DIFFUSERS_CONFIGS_ROOT
-from huggingface_hub import hf_hub_download
 from toolkit.models.flux import add_model_gpu_splitter_to_flux, bypass_flux_guidance, restore_flux_guidance
 
 from optimum.quanto import freeze, qfloat8, QTensor, qint4
@@ -683,18 +682,10 @@ class StableDiffusion:
                         load_lora_path, "pytorch_lora_weights.safetensors"
                     )
                 elif not os.path.exists(load_lora_path):
-                    print_acc(f"Grabbing lora from the hub: {load_lora_path}")
-                    new_lora_path = hf_hub_download(
-                        load_lora_path,
-                        filename="pytorch_lora_weights.safetensors"
+                    raise FileNotFoundError(
+                        "Assistant/inference LoRA must be local; automatic "
+                        f"downloads are disabled: {load_lora_path}"
                     )
-                    # replace the path
-                    load_lora_path = new_lora_path
-                    
-                    if self.model_config.inference_lora_path is not None:
-                        self.model_config.inference_lora_path = new_lora_path
-                    if self.model_config.assistant_lora_path is not None:
-                        self.model_config.assistant_lora_path = new_lora_path
 
                 if self.model_config.assistant_lora_path is not None:
                     # for flux, we assume it is flux schnell. We cannot merge in the assistant lora and unmerge it on

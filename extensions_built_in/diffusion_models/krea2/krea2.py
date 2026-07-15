@@ -23,8 +23,6 @@ from PIL import Image
 from torchvision.transforms.functional import to_tensor
 from safetensors.torch import load_file, save_file
 
-import huggingface_hub
-from huggingface_hub.errors import EntryNotFoundError
 from diffusers import AutoencoderKLQwenImage
 from transformers import (
     AutoProcessor,
@@ -93,13 +91,6 @@ scheduler_config = {
     "time_shift_type": "exponential",
 }
 
-# Defaults; both overridable via model.model_kwargs.
-QWEN3_VL_PATH = "Qwen/Qwen3-VL-4B-Instruct"
-QWEN_IMAGE_VAE_PATH = "Qwen/Qwen-Image"
-
-HF_TOKEN = os.getenv("HF_TOKEN", None)
-
-
 def patch_qwen_vl_patch_embed(model):
     """Qwen-VL's vision patch_embed is a Conv3d whose kernel == stride, i.e. a plain
     linear projection of each flattened patch. bf16 Conv3d has no fast cuDNN kernel and
@@ -125,11 +116,10 @@ def patch_qwen_vl_patch_embed(model):
 
 
 def _load_mmdit_state_dict(name_or_path: str, filename: Optional[str]) -> dict:
-    """Load the MMDiT weights from a local safetensors file/dir or the HF hub.
+    """Load the MMDiT weights from a local safetensors file or directory.
 
-    ``name_or_path`` may be: a ``.safetensors`` file, a directory containing one
-    (``filename`` or the lone ``.safetensors`` in it), or a hub repo id (the
-    file ``filename`` is downloaded, defaulting to ``model.safetensors``).
+    ``name_or_path`` may be a ``.safetensors`` file or a directory containing
+    ``filename`` (or exactly one ``.safetensors`` file).
     """
     if name_or_path.endswith(".safetensors") and os.path.isfile(name_or_path):
         return load_file(name_or_path)
@@ -145,22 +135,10 @@ def _load_mmdit_state_dict(name_or_path: str, filename: Optional[str]) -> dict:
             f"{candidates}. Set model.model_kwargs.checkpoint_filename."
         )
 
-    # Treat as a hub repo id. When no filename is given, derive it from the repo
-    # name's trailing segment (e.g. "krea/Krea-2-Raw" -> "raw.safetensors",
-    # "krea/Krea-2-Turbo" -> "turbo.safetensors").
-    fname = filename or (
-        name_or_path.split("/")[-1].split("-")[-1].lower() + ".safetensors"
+    raise FileNotFoundError(
+        f"Krea 2 checkpoint is not a local file or directory: {name_or_path}. "
+        "Download it manually and update model.name_or_path."
     )
-    try:
-        path = huggingface_hub.hf_hub_download(
-            repo_id=name_or_path, filename=fname, token=HF_TOKEN
-        )
-    except EntryNotFoundError as e:
-        raise FileNotFoundError(
-            f"Could not find {fname!r} in hub repo {name_or_path!r}. Set "
-            "model.model_kwargs.checkpoint_filename to the weight file name."
-        ) from e
-    return load_file(path)
 
 
 class Krea2Model(BaseModel):
@@ -259,24 +237,24 @@ class Krea2Model(BaseModel):
 
     def _load_text_encoder(self):
         dtype = self.torch_dtype
-        te_path = self.model_config.model_kwargs.get("text_encoder_path", QWEN3_VL_PATH)
+        te_path = self.model_config.model_kwargs["text_encoder_path"]
         self.print_and_status_update(f"Loading Qwen3-VL text encoder from {te_path}")
 
         tokenizer = AutoTokenizer.from_pretrained(
-            te_path, max_length=self.max_text_length, token=HF_TOKEN
+            te_path, max_length=self.max_text_length, local_files_only=True
         )
         processor = Qwen2TokenizerFast.from_pretrained(
-            te_path, max_length=self.max_text_length, token=HF_TOKEN
+            te_path, max_length=self.max_text_length, local_files_only=True
         )
         text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
-            te_path, torch_dtype=dtype, token=HF_TOKEN
+            te_path, torch_dtype=dtype, local_files_only=True
         )
         vl_processor = None
         if self.is_edit:
             # Edit mode: reference images are encoded into the text embeddings,
             # so the vision tower stays. Swap its Conv3d patch_embed for an
             # equivalent GEMM (bf16 Conv3d has no fast cuDNN kernel).
-            vl_processor = AutoProcessor.from_pretrained(te_path, token=HF_TOKEN)
+            vl_processor = AutoProcessor.from_pretrained(te_path, local_files_only=True)
             patch_qwen_vl_patch_embed(text_encoder)
         else:
             # We only ever encode text, so the vision tower is dead weight -- drop it to
@@ -289,10 +267,13 @@ class Krea2Model(BaseModel):
         return tokenizer, processor, vl_processor, text_encoder
 
     def _load_vae(self):
-        vae_path = self.model_config.model_kwargs.get("vae_path", QWEN_IMAGE_VAE_PATH)
+        vae_path = self.model_config.model_kwargs["vae_path"]
         self.print_and_status_update(f"Loading Qwen-Image VAE from {vae_path}")
         vae = AutoencoderKLQwenImage.from_pretrained(
-            vae_path, subfolder="vae", torch_dtype=self.vae_torch_dtype, token=HF_TOKEN
+            vae_path,
+            subfolder="vae",
+            torch_dtype=self.vae_torch_dtype,
+            local_files_only=True,
         )
         vae.eval()
         vae.requires_grad_(False)
@@ -302,26 +283,9 @@ class Krea2Model(BaseModel):
         self.print_and_status_update("Loading assistant LoRA")
         lora_path = self.model_config.assistant_lora_path
         if not os.path.exists(lora_path):
-            # assume it is a hub path
-            lora_splits = lora_path.split("/")
-            if len(lora_splits) != 3:
-                raise ValueError(
-                    f"Assistant LoRA path {lora_path} is not a valid local path or hub path."
-                )
-            repo_id = "/".join(lora_splits[:2])
-            filename = lora_splits[2]
-            try:
-                lora_path = huggingface_hub.hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    token=HF_TOKEN,
-                )
-                # upgrade path to the local download
-                self.model_config.assistant_lora_path = lora_path
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to download assistant LoRA from {lora_path}: {e}"
-                )
+            raise FileNotFoundError(
+                f"Assistant LoRA is not a local file: {lora_path}"
+            )
         # load the adapter and merge it in. We will inference with a -1.0 multiplier so the adapter effects only work during training.
         lora_state_dict = load_file(lora_path)
         # detect the LoRA rank from the first down-projection weight.

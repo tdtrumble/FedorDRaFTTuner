@@ -1,1 +1,0 @@
-from .ernie_image import ErnieImageModel

@@ -13,7 +13,6 @@ from toolkit.data_transfer_object.data_loader import DataLoaderBatchDTO
 from toolkit.samplers.custom_flowmatch_sampler import CustomFlowMatchEulerDiscreteScheduler
 from toolkit.models.base_model import BaseModel
 from toolkit.models.sapiens2 import Sapiens2
-import huggingface_hub
 
 
 class ResBlock(nn.Module):
@@ -1041,7 +1040,15 @@ class DiffusionFeatureExtractor9(nn.Module):
         
         self.version = 9
         self.sd_ref = weakref.ref(sd) if sd is not None else None
-        ckpt_path = huggingface_hub.hf_hub_download(repo_id="facebook/sapiens2-pretrain-1b", filename="sapiens2_1b_pretrain.safetensors")
+        ckpt_path = os.environ.get(
+            "SAPIENS2_PRETRAIN_PATH",
+            os.path.join("models", "sapiens2", "sapiens2_1b_pretrain.safetensors"),
+        )
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(
+                "Sapiens2 weights must be local; automatic downloads are disabled: "
+                f"{ckpt_path}"
+            )
         self.model = Sapiens2(arch="sapiens2_1b", img_size=(1024, 768), patch_size=16).eval().cuda()  # img_size is (H, W)
         self.model.load_state_dict(load_file(ckpt_path))
         self.model.to(device, dtype=dtype)

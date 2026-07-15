@@ -4,7 +4,6 @@ import os
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 import json
 
@@ -272,7 +271,10 @@ class PixtralVisionEncoder(nn.Module):
         if os.path.isdir(pretrained_model_name_or_path):
             model_folder = pretrained_model_name_or_path
         else:
-            model_folder = snapshot_download(pretrained_model_name_or_path)
+            raise FileNotFoundError(
+                "Pixtral model must be a local directory; automatic downloads "
+                f"are disabled: {pretrained_model_name_or_path}"
+            )
 
         # make sure there is a config
         if not os.path.exists(os.path.join(model_folder, "config.json")):

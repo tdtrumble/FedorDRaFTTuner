@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+temp_prompt.txt
 
 # C extensions
 *.so
@@ -187,3 +188,14 @@ aitk_db.db
 .claude
 # vendored external repos (re-clone; see toolkit/rewards/body.py)
 repositories/
+
+# Manually downloaded model weights and caches (never commit these)
+*.safetensors
+*.ckpt
+*.onnx
+*.pt
+*.pth
+*.bin
+*.gguf
+.huggingface/
+.cache/huggingface/

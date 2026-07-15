@@ -19,7 +19,6 @@ from safetensors.torch import save_file, load_file
 from torch.utils.data import DataLoader
 import torch
 import torch.backends.cuda
-from huggingface_hub import HfApi, interpreter_login
 from toolkit.memory_management import MemoryManager
 
 from toolkit.basic import value_map
@@ -2012,7 +2011,9 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # check if it exists
         optimizer_state_filename = f'optimizer.pt'
         optimizer_state_file_path = os.path.join(self.save_root, optimizer_state_filename)
-        if os.path.exists(optimizer_state_file_path):
+        if os.path.exists(optimizer_state_file_path) and not getattr(
+            self, 'disable_optimizer_resume', False
+        ):
             # try to load
             # previous param groups
             # previous_params = copy.deepcopy(optimizer.param_groups)
@@ -2648,15 +2649,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.logger.finish()
         self.accelerator.end_training()
 
-        if self.accelerator.is_main_process:
-            # push to hub
-            if self.save_config.push_to_hub:
-                if("HF_TOKEN" not in os.environ):
-                    interpreter_login(new_session=False, write_permission=True)
-                self.push_to_hub(
-                    repo_id=self.save_config.hf_repo_id,
-                    private=self.save_config.hf_private
-                )
         del (
             self.sd,
             unet,
@@ -2675,6 +2667,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
     repo_id: str,
     private: bool = False,
     ):  
+        raise RuntimeError("Hub publishing is disabled in this local-only fork")
         if not self.accelerator.is_main_process:
             return
         readme_content = self._generate_readme(repo_id)

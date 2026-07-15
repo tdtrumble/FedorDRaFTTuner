@@ -1,210 +1,77 @@
-job: extension
+job: krea2_draft
 config:
-  name: krea2_subject_lora
+  name: krea2_subject_draft
   process:
-  - type: diffusion_trainer
-    training_folder: output
-    sqlite_db_path: ./aitk_db.db
-    device: cuda
-    trigger_word: tok
-    performance_log_every: 10
-    network:
-      type: lora
-      linear: 32
-      linear_alpha: 32
-      network_kwargs:
-        ignore_if_contains: []
-    save:
-      dtype: bf16
-      save_every: 100
-      max_step_saves_to_keep: 5
-      save_format: diffusers
-      push_to_hub: false
-    datasets:
-    - folder_path: datasets/subject
-      mask_path: null
-      mask_min_value: 0.1
-      default_caption: ''
-      caption_ext: txt
-      caption_dropout_rate: 0.05
-      cache_latents_to_disk: false
-      is_reg: false
-      network_weight: 1
-      resolution:
-      - 512
-      - 768
-      - 1024
-      controls: []
-      shrink_video_to_frames: true
-      num_frames: 1
-      flip_x: false
-      flip_y: false
-      num_repeats: 1
-    train:
-      batch_size: 1
-      bypass_guidance_embedding: false
-      steps: 200
-      gradient_accumulation: 1
-      train_unet: true
-      train_text_encoder: false
-      gradient_checkpointing: true
-      noise_scheduler: flowmatch
-      optimizer: automagic2
-      timestep_type: sigmoid
-      content_or_style: balanced
-      optimizer_params:
-        weight_decay: 0.0001
-      unload_text_encoder: false
-      cache_text_embeddings: false
-      lr: 0.0001
-      ema_config:
-        use_ema: false
-        ema_decay: 0.99
-      skip_first_sample: false
-      force_first_sample: false
-      disable_sampling: false
-      dtype: bf16
-      diff_output_preservation: false
-      diff_output_preservation_multiplier: 1
-      diff_output_preservation_class: person
-      switch_boundary_every: 1
-      loss_type: mse
-    logging:
-      log_every: 1
-      use_ui_logger: true
-    model:
-      name_or_path: krea/Krea-2-Raw
-      quantize: true
-      qtype: qfloat8
-      quantize_te: true
-      qtype_te: qfloat8
-      arch: krea2
-      low_vram: false
-      model_kwargs: {}
-      compile: false
-      layer_offloading: false
-      layer_offloading_text_encoder_percent: 1
-      layer_offloading_transformer_percent: 1
-    sample:
-      sampler: flowmatch
-      sample_every: 100
-      width: 1024
-      height: 1024
-      samples:
-      - prompt: tok portrait photo, natural light, neutral background
-      - prompt: tok full body, casual outfit, standing outdoors
-      - prompt: tok close-up, soft studio lighting
-      neg: ''
-      seed: 42
-      walk_seed: false
-      guidance_scale: 4
-      sample_steps: 30
-      num_frames: 1
-      fps: 1
-  - type: krea2_draft_trainer
-    training_folder: output
-    sqlite_db_path: ./aitk_db.db
-    device: cuda
-    trigger_word: tok
-    performance_log_every: 10
-    network:
-      type: lora
-      linear: 32
-      linear_alpha: 32
-      network_kwargs:
-        ignore_if_contains: []
-    save:
-      dtype: bf16
-      save_every: 0
-      max_step_saves_to_keep: 8
-      save_format: diffusers
-      push_to_hub: false
-    draft:
-      steps: 8
-      draft_k: 1
-      guidance_scale: 4.5
-      width: 512
-      height: 512
-      lv_samples: 0
-      high_noise_shift: 0.5
-      seed: 42
-      checkpoint_vae: true
-      train_modules: qkvo
-      save_images_every: 0
-      save_every: 5
-      save_after_step: 200
-      num_reward_steps: 10
-      final_sample_width: 512
-      final_sample_height: 512
-      final_sample_steps: 16
-      final_sample_count: 1
-      prompts: null
-      prompts_path: null
-      reward:
-        reference_images: datasets/subject
-        face_weight: 1.0
-        body_weight: 0.5
-        face:
-          target_similarity: 0.45
-          providers:
-          - CUDAExecutionProvider
-          - CPUExecutionProvider
-        body:
-          loss_tier: somax
-          sam3d_hf_repo: facebook/sam-3d-body-vith
-    train:
-      batch_size: 1
-      steps: 210
-      gradient_accumulation: 1
-      train_unet: true
-      train_text_encoder: false
-      gradient_checkpointing: true
-      noise_scheduler: flowmatch
-      optimizer: adamw
-      optimizer_params:
-        weight_decay: 0.0001
-      lr: 0.0001
-      max_grad_norm: 1.0
-      unload_text_encoder: false
-      cache_text_embeddings: false
-      ema_config:
-        use_ema: false
-        ema_decay: 0.99
-      skip_first_sample: true
-      force_first_sample: false
-      disable_sampling: false
-      dtype: bf16
-      loss_type: mse
-    logging:
-      log_every: 1
-      use_ui_logger: true
-    model:
-      name_or_path: krea/Krea-2-Raw
-      quantize: true
-      qtype: qfloat8
-      quantize_te: true
-      qtype_te: qfloat8
-      arch: krea2
-      low_vram: false
-      model_kwargs: {}
-      compile: false
-      layer_offloading: false
-      layer_offloading_text_encoder_percent: 1
-      layer_offloading_transformer_percent: 1
-    sample:
-      sampler: flowmatch
-      sample_every: 999999
-      width: 512
-      height: 512
-      samples:
-      - prompt: tok portrait photo, natural light, neutral background
-      neg: ''
-      seed: 42
-      walk_seed: false
-      guidance_scale: 4
-      sample_steps: 16
-      num_frames: 1
-      fps: 1
+    - type: krea2_draft
+      training_folder: output
+      device: cuda
+      trigger_word: tok
+
+      # Existing adapter to refine. Settings must match the safetensors file.
+      adapter:
+        path: models/adapters/subject_lora.safetensors
+        type: lora
+        rank: 32
+        alpha: 32
+
+      # Every model path is local. The runner forces Hugging Face offline mode.
+      model:
+        arch: krea2
+        name_or_path: models/krea2/raw.safetensors
+        quantize: true
+        qtype: qfloat8
+        quantize_te: true
+        qtype_te: qfloat8
+        low_vram: false
+        model_kwargs:
+          text_encoder_path: models/qwen3-vl-4b-instruct
+          vae_path: models/qwen-image
+
+      draft:
+        steps: 8
+        draft_k: 1
+        guidance_scale: 4.5
+        width: 512
+        height: 512
+        lv_samples: 0
+        high_noise_shift: 0.5
+        seed: 42
+        checkpoint_vae: true
+        train_modules: qkvo
+        save_images_every: 5
+        save_every: 5
+        prompts:
+          - "[trigger] portrait photo, natural light"
+          - "[trigger] full body photo, standing outdoors"
+        reward:
+          reference_images: data/reference
+          face_weight: 1.0
+          body_weight: 0.0
+          face:
+            model_dir: models/antelopev2
+            target_similarity: 0.45
+            providers:
+              - CUDAExecutionProvider
+              - CPUExecutionProvider
+
+      # Exactly this many DRaFT optimizer updates are run (there is no SFT stage).
+      train:
+        steps: 30
+        batch_size: 1
+        gradient_accumulation: 1
+        optimizer: adamw
+        lr: 0.0001
+        max_grad_norm: 1.0
+        dtype: bf16
+
+      save:
+        dtype: bf16
+        max_step_saves_to_keep: 5
+
+      logging:
+        log_every: 1
+        use_ui_logger: false
+
 meta:
-  name: '[name]'
-  version: '1.0'
+  name: "[name]"
+  version: "2.0"

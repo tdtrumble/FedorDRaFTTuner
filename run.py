@@ -1,137 +1,138 @@
+"""Command-line entry point for local-only Krea 2 DRaFT training."""
+
+from __future__ import annotations
+
+import argparse
 import os
 import sys
-from dotenv import load_dotenv
-# Load the .env file if it exists
-load_dotenv()
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = os.getenv("HF_HUB_ENABLE_HF_TRANSFER", "1")
-# the hf-xet download backend stalls forever mid-download (no timeout); force plain HTTP
-os.environ["HF_HUB_DISABLE_XET"] = os.getenv("HF_HUB_DISABLE_XET", "1")
-os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
-seed = None
-if "SEED" in os.environ:
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Apply DRaFT reward optimization to an existing Krea 2 LoRA/LoKr."
+    )
+    parser.add_argument(
+        "config_file_list",
+        nargs="+",
+        help="One or more Krea 2 DRaFT YAML/JSON config files",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate config structure and all required local files, then exit",
+    )
+    parser.add_argument(
+        "-r",
+        "--recover",
+        action="store_true",
+        help="Continue to the next config if a job fails",
+    )
+    parser.add_argument(
+        "-n", "--name", default=None, help="Replace the config's [name] placeholder"
+    )
+    parser.add_argument("-l", "--log", default=None, help="Write console output to this file")
+    return parser
+
+
+def _configure_offline_runtime() -> None:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    # Defense in depth: retained third-party libraries must never contact a hub.
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["DIFFUSERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    os.environ["DISABLE_TELEMETRY"] = "YES"
+    os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
+
+
+def _validate_configs(paths: list[str], name: str | None) -> None:
+    from toolkit.config import get_config
+    from toolkit.draft_config import validate_public_config
+
+    for path in paths:
+        validate_public_config(get_config(path, name))
+        print(f"OK: {path}")
+
+
+def _seed_everything() -> None:
+    raw_seed = os.environ.get("SEED")
+    if raw_seed is None:
+        return
     try:
-        seed = int(os.environ["SEED"])
-    except ValueError:
-        print(f"Invalid SEED value: {os.environ['SEED']}. SEED must be an integer.")
+        seed = int(raw_seed)
+    except ValueError as exc:
+        raise ValueError(f"SEED must be an integer, got {raw_seed!r}") from exc
 
-sys.path.insert(0, os.getcwd())
-# must come before ANY torch or fastai imports
-# import toolkit.cuda_malloc
-
-# turn off diffusers telemetry until I can figure out how to make it opt-in
-os.environ['DISABLE_TELEMETRY'] = 'YES'
-
-# set torch to trace mode
-import torch
-    
-# check if we have DEBUG_TOOLKIT in env
-if os.environ.get("DEBUG_TOOLKIT", "0") == "1":
-    torch.autograd.set_detect_anomaly(True)
-
-if seed is not None:
     import random
     import numpy as np
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-import argparse
-from toolkit.job import get_job
-from toolkit.accelerator import get_accelerator
-from toolkit.print import print_acc, setup_log_to_file
 
-accelerator = get_accelerator()
-
-
-def print_end_message(jobs_completed, jobs_failed):
-    if not accelerator.is_main_process:
-        return
-    failure_string = f"{jobs_failed} failure{'' if jobs_failed == 1 else 's'}" if jobs_failed > 0 else ""
-    completed_string = f"{jobs_completed} completed job{'' if jobs_completed == 1 else 's'}"
-
+def _print_end_message(print_acc, jobs_completed: int, jobs_failed: int) -> None:
     print_acc("")
     print_acc("========================================")
-    print_acc("Result:")
-    if len(completed_string) > 0:
-        print_acc(f" - {completed_string}")
-    if len(failure_string) > 0:
-        print_acc(f" - {failure_string}")
+    print_acc(f"Result: {jobs_completed} completed, {jobs_failed} failed")
     print_acc("========================================")
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def main() -> int:
+    args = _parser().parse_args()
+    _configure_offline_runtime()
+    sys.path.insert(0, os.getcwd())
+    _validate_configs(args.config_file_list, args.name)
+    if args.validate:
+        return 0
 
-    # require at lease one config file
-    parser.add_argument(
-        'config_file_list',
-        nargs='+',
-        type=str,
-        help='Name of config file (eg: person_v1 for config/person_v1.json/yaml), or full path if it is not in config folder, you can pass multiple config files and run them all sequentially'
-    )
+    import torch
 
-    # flag to continue if failed job
-    parser.add_argument(
-        '-r', '--recover',
-        action='store_true',
-        help='Continue running additional jobs even if a job fails'
-    )
+    if os.environ.get("DEBUG_TOOLKIT", "0") == "1":
+        torch.autograd.set_detect_anomaly(True)
+    _seed_everything()
 
-    # flag to continue if failed job
-    parser.add_argument(
-        '-n', '--name',
-        type=str,
-        default=None,
-        help='Name to replace [name] tag in config file, useful for shared config file'
-    )
-    
-    parser.add_argument(
-        '-l', '--log',
-        type=str,
-        default=None,
-        help='Log file to write output to'
-    )
-    args = parser.parse_args()
-    
-    if args.log is not None:
+    from toolkit.accelerator import get_accelerator
+    from toolkit.job import get_job
+    from toolkit.print import print_acc, setup_log_to_file
+
+    if args.log:
         setup_log_to_file(args.log)
-
-    config_file_list = args.config_file_list
-    if len(config_file_list) == 0:
-        raise Exception("You must provide at least one config file")
-
-    jobs_completed = 0
-    jobs_failed = 0
-
+    accelerator = get_accelerator()
+    completed = failed = 0
     if accelerator.is_main_process:
-        print_acc(f"Running {len(config_file_list)} job{'' if len(config_file_list) == 1 else 's'}")
+        print_acc(f"Running {len(args.config_file_list)} DRaFT job(s) in offline mode")
 
-    for config_file in config_file_list:
+    for config_file in args.config_file_list:
+        job = None
         try:
             job = get_job(config_file, args.name)
             job.run()
             job.cleanup()
-            jobs_completed += 1
-        except Exception as e:
-            print_acc(f"Error running job: {e}")
-            jobs_failed += 1
-            try:
-                job.process[0].on_error(e)
-            except Exception as e2:
-                print_acc(f"Error running on_error: {e2}")
+            completed += 1
+        except KeyboardInterrupt:
+            if job is not None and getattr(job, "process", None):
+                job.process[0].on_error(KeyboardInterrupt())
+            raise
+        except Exception as exc:
+            print_acc(f"Error running job: {exc}")
+            failed += 1
+            if job is not None and getattr(job, "process", None):
+                try:
+                    job.process[0].on_error(exc)
+                except Exception as hook_exc:
+                    print_acc(f"Error running on_error: {hook_exc}")
             if not args.recover:
-                print_end_message(jobs_completed, jobs_failed)
-                raise e
-        except KeyboardInterrupt as e:
-            try:
-                job.process[0].on_error(e)
-            except Exception as e2:
-                print_acc(f"Error running on_error: {e2}")
-            if not args.recover:
-                print_end_message(jobs_completed, jobs_failed)
-                raise e
+                _print_end_message(print_acc, completed, failed)
+                raise
+
+    if accelerator.is_main_process:
+        _print_end_message(print_acc, completed, failed)
+    return 1 if failed else 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

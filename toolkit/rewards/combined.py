@@ -60,8 +60,7 @@ def build_reward_from_config(cfg: dict, device=None) -> CombinedReward:
       face_weight / body_weight: component weights (face 1.0, body 0.5)
       face: kwargs forwarded to FaceSimilarityReward
       body: kwargs forwarded to BodyGeometryReward (checkpoint paths etc.)
-    Body reward setup failures are non-fatal (warned + skipped) because the
-    SAM 3D Body checkpoint is gated on Hugging Face.
+    Body reward setup failures are non-fatal (warned + skipped).
     """
     cfg = dict(cfg or {})
     reference_images = cfg.get("reference_images", None)
@@ -106,9 +105,8 @@ def build_reward_from_config(cfg: dict, device=None) -> CombinedReward:
         except Exception as exc:  # noqa: BLE001 - gated checkpoint / optional dep
             warnings.warn(
                 f"body reward unavailable ({exc}); continuing with face reward "
-                "only. To enable it: request access to facebook/sam-3d-body-vith "
-                "on Hugging Face, run `hf auth login` in your training venv, "
-                "and re-run."
+                "only. Download and configure the SAM 3D Body files described "
+                "in README.md, then re-run."
             )
             body = None
             body_weight = 0.0

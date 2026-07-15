@@ -1,8 +1,7 @@
 """DRaFT-K reward trainer for Krea 2 (FedorAiToolkit).
 
-Stage-2 process: loads the Krea2 base (quantized per config), attaches the
-SFT-trained LoRA / LoKr network (resume via ``network.pretrained_lora_path``
-or the process's own save folder), then optimizes the adapter directly on
+Standalone process: loads the local Krea2 base, attaches an existing
+LoRA / LoKr safetensors adapter, then optimizes the adapter directly on
 differentiable rewards (face identity + body geometry) computed on images
 sampled from the model during training.
 
@@ -28,13 +27,10 @@ Config (all under the process dict):
                             # tensors receive optimizer updates; all = every
                             # adapter tensor (LoRA and LoKr alike)
     save_images_every: 10   # dump reward images to <save>/draft_step_images
-    save_every: 10          # checkpoint every N steps after save_after_step
-    save_after_step: null   # defaults to the SFT stage end (e.g. 200)
+    save_every: 10          # checkpoint every N DRaFT steps
     prompts:                # explicit prompt list, or...
       - "tok portrait photo, natural light"
-    prompts_path: null      # ...a txt file (one prompt per line), or fall
-                            # back to dataset captions next to the reward
-                            # reference images
+    prompts_path: null      # ...a txt file (one prompt per line)
     reward:
       reference_images: "path/to/reference/images"
       face_weight: 1.0
@@ -43,7 +39,6 @@ Config (all under the process dict):
       body: {}              # extra BodyGeometryReward kwargs
 """
 
-import glob
 import os
 import random
 from collections import OrderedDict
@@ -52,7 +47,7 @@ from typing import List, Union
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from extensions_built_in.sd_trainer.DiffusionTrainer import DiffusionTrainer
+from extensions_built_in.sd_trainer.SDTrainer import SDTrainer
 from extensions_built_in.diffusion_models.krea2.src.pipeline import (
     pad_text_features,
     predict_velocity,
@@ -64,8 +59,8 @@ from toolkit.prompt_utils import PromptEmbeds
 from toolkit.rewards import build_reward_from_config
 from toolkit.accelerator import unwrap_model
 from toolkit.print import print_acc
+from toolkit.draft_config import normalize_process_config
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 QKVO_TAILS = {"wq", "wk", "wv", "wo"}
 
 
@@ -82,8 +77,9 @@ def _is_qkvo_module(lora_name: str) -> bool:
     return len(tokens) > 0 and tokens[-1] in QKVO_TAILS
 
 
-class Krea2DraftTrainer(DiffusionTrainer):
+class Krea2DraftTrainer(SDTrainer):
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
+        config = OrderedDict(normalize_process_config(config))
         super().__init__(process_id, job, config, **kwargs)
         if (self.model_config.arch or "").lower() != "krea2":
             raise ValueError(
@@ -106,7 +102,6 @@ class Krea2DraftTrainer(DiffusionTrainer):
             raise ValueError("draft.train_modules must be 'qkvo' or 'all'")
         self.draft_save_images_every = int(draft.get("save_images_every", 10))
         self.draft_save_every = int(draft.get("save_every", 10))
-        self._draft_save_after_step_conf = draft.get("save_after_step", None)
         self._draft_save_after_step = 0
         self._draft_prompts_conf = draft.get("prompts", None)
         self._draft_prompts_path = draft.get("prompts_path", None)
@@ -118,6 +113,10 @@ class Krea2DraftTrainer(DiffusionTrainer):
         self.draft_prompts: List[str] = []
         self._draft_embeds: List[torch.Tensor] = []
         self._prompt_cursor = 0
+        # A configured adapter is always the exact starting point for this
+        # invocation. Do not implicitly resume weights or optimizer state from
+        # an output directory left by an earlier run.
+        self.disable_optimizer_resume = True
 
         # all prompts are pre-encoded in hook_before_train_loop, so the text
         # encoder (Qwen3-VL, ~8 GB quantized) never needs to be resident
@@ -126,48 +125,11 @@ class Krea2DraftTrainer(DiffusionTrainer):
         # the GPU and push the reward models into shared-memory spill.
         self.train_device_state_preset["text_encoder"]["device"] = "cpu"
 
-    def run(self):
-        self._release_sibling_processes()
-        super().run()
-
-    def _release_sibling_processes(self):
-        """Free models loaded by earlier processes in the same job.
-
-        When SFT + DRaFT run as sequential processes in one config, ai-toolkit
-        keeps the finished stage's quantized base model resident. Loading a
-        second copy overflows the GPU into Windows shared memory, which slows
-        CUDA to a crawl instead of OOMing. Processes run sequentially, so the
-        finished stage's model is safe to drop before we load ours.
-        """
-        job = getattr(self, "job", None)
-        released = False
-        for proc in getattr(job, "process", None) or []:
-            if proc is self:
-                continue
-            for attr in ("sd", "network", "optimizer", "lr_scheduler", "ema",
-                         "data_loader", "data_loader_reg", "adapter",
-                         "embedding", "modules_being_trained", "params"):
-                if getattr(proc, attr, None) is not None:
-                    setattr(proc, attr, None)
-                    released = True
-        if released:
-            # the global Accelerator keeps its own references to every model
-            # passed through accelerator.prepare() (stage 1's unet/vae/network
-            # live in accelerator._models); free_memory() drops them all and
-            # empties the CUDA cache. Nothing of ours is prepared yet.
-            try:
-                self.accelerator.free_memory()
-            except Exception as e:
-                print_acc(f"draft: accelerator.free_memory() failed: {e}")
-            # gc first so dropped models actually free their CUDA blocks,
-            # then release the now-empty cache back to the driver
-            flush(garbage_collect=True)
-            flush(garbage_collect=False)
-            allocated = torch.cuda.memory_allocated() / 1e9
-            print_acc(
-                "draft: released prior process model(s) before loading the "
-                f"DRaFT base ({allocated:.2f} GB still allocated)"
-            )
+    def get_latest_save_path(self, name=None, post="", include_pretrained_lora=True):
+        del name, post
+        if include_pretrained_lora and self.network_config is not None:
+            return self.network_config.pretrained_lora_path
+        return None
 
     # ------------------------------------------------------------------
     # QKVO / all parameter selection (LoRA and LoKr)
@@ -232,34 +194,15 @@ class Krea2DraftTrainer(DiffusionTrainer):
         elif self._draft_prompts_path and os.path.exists(self._draft_prompts_path):
             with open(self._draft_prompts_path, "r", encoding="utf-8") as f:
                 prompts = [line.strip() for line in f if line.strip()]
-        else:
-            # fall back to dataset captions living next to the reference images
-            ref = self._draft_reward_conf.get("reference_images", None)
-            if ref and os.path.isdir(str(ref)):
-                for txt in sorted(glob.glob(os.path.join(str(ref), "*.txt"))):
-                    with open(txt, "r", encoding="utf-8") as f:
-                        caption = f.read().strip()
-                    if caption:
-                        prompts.append(caption)
         if not prompts:
             raise ValueError(
-                "no DRaFT prompts: set draft.prompts, draft.prompts_path, or put "
-                ".txt captions next to draft.reward.reference_images"
+                "no DRaFT prompts: set draft.prompts or draft.prompts_path"
             )
         if self.trigger_word is not None:
             prompts = [p.replace("[trigger]", self.trigger_word) for p in prompts]
         return prompts
 
     def _resolve_draft_save_after_step(self) -> int:
-        if self._draft_save_after_step_conf is not None:
-            return int(self._draft_save_after_step_conf)
-        job = getattr(self, "job", None)
-        processes = getattr(getattr(job, "config", None), "process", None) or []
-        if self.process_id > 0 and len(processes) > self.process_id - 1:
-            prior = processes[self.process_id - 1]
-            prior_steps = prior.get("train", {}).get("steps")
-            if prior_steps is not None:
-                return int(prior_steps)
         return int(self.start_step)
 
     def _is_draft_save_step(self) -> bool:
@@ -296,7 +239,7 @@ class Krea2DraftTrainer(DiffusionTrainer):
         super().hook_before_train_loop()
 
         self._draft_save_after_step = self._resolve_draft_save_after_step()
-        # DRaFT uses reward-stage-relative saves (every N steps after SFT).
+        # DRaFT uses reward-stage-relative saves.
         self.save_config.save_every = 0
         if self.draft_save_every > 0:
             print_acc(
@@ -471,19 +414,10 @@ class Krea2DraftTrainer(DiffusionTrainer):
         return -rewards.mean(), rewards.detach()
 
     def _save_step_images(self, images: torch.Tensor, prompts: List[str]):
-        import time as _time
-
         from torchvision.transforms import functional as TF
 
         sample_dir = os.path.join(self.save_root, "draft_step_images")
         os.makedirs(sample_dir, exist_ok=True)
-        # mirror into the job's samples folder using ai-toolkit's
-        # {ms}__{step:09d}_{idx} naming so the UI sample view picks them up
-        ui_sample_dir = None
-        if getattr(self, "is_ui_trainer", False):
-            ui_sample_dir = os.path.join(self.save_root, "samples")
-            os.makedirs(ui_sample_dir, exist_ok=True)
-        ms_now = int(_time.time() * 1000)
         images_cpu = ((images.detach().float().clamp(-1, 1).cpu() + 1.0) * 0.5).clamp(0, 1)
         for idx, image in enumerate(images_cpu):
             pil = TF.to_pil_image(image)
@@ -491,13 +425,6 @@ class Krea2DraftTrainer(DiffusionTrainer):
             pil.save(os.path.join(sample_dir, f"{stem}.jpg"))
             with open(os.path.join(sample_dir, f"{stem}.txt"), "w", encoding="utf-8") as f:
                 f.write((prompts[idx] if idx < len(prompts) else "") + "\n")
-            if ui_sample_dir is not None:
-                pil.save(
-                    os.path.join(
-                        ui_sample_dir,
-                        f"{ms_now}__{str(self.step_num).zfill(9)}_{idx}.jpg",
-                    )
-                )
 
     # ------------------------------------------------------------------
     # Train loop

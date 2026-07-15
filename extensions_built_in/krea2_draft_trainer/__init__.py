@@ -4,12 +4,12 @@ from toolkit.extension import Extension
 class Krea2DraftTrainerExtension(Extension):
     """DRaFT-K reward training stage for Krea 2 (FedorAiToolkit).
 
-    Resumes an SFT-trained LoRA / LoKr and optimizes it directly on
+    Loads an existing LoRA / LoKr and optimizes it directly on
     differentiable face + body similarity rewards computed on images the
     model generates during training.
     """
 
-    uid = "krea2_draft_trainer"
+    uid = "krea2_draft"
     name = "Krea 2 DRaFT Reward Trainer"
 
     @classmethod

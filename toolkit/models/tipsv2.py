@@ -11,6 +11,7 @@ Original remote code: https://huggingface.co/google/tipsv2-b14-dpt
 
 import functools
 import math
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence, Tuple, Union
 
@@ -872,30 +873,21 @@ class TIPSv2DPTModel(nn.Module):
         dtype: torch.dtype = torch.float32,
         cache_dir: Optional[str] = None,
     ) -> "TIPSv2DPTModel":
-        """Build the model and load weights from the hub.
-
-        Pulls the DPT head weights from ``model_id`` (default
-        ``google/tipsv2-b14-dpt``) and the vision-encoder weights from the
-        backbone repo specified in the DPT config.
-        """
-        from huggingface_hub import hf_hub_download
+        """Build the model from a local directory containing both checkpoints."""
         from safetensors.torch import load_file
 
-        if model_id != "google/tipsv2-b14-dpt":
-            raise NotImplementedError(
-                f"Local TIPSv2DPTModel only supports 'google/tipsv2-b14-dpt'; got {model_id!r}"
+        if not os.path.isdir(model_id):
+            raise FileNotFoundError(
+                "TIPSv2 must be a local directory; automatic downloads are "
+                f"disabled: {model_id}"
             )
 
         model = cls()
 
-        dpt_ckpt = hf_hub_download(model_id, "model.safetensors", cache_dir=cache_dir)
+        dpt_ckpt = os.path.join(model_id, "model.safetensors")
         dpt_state = load_file(dpt_ckpt)
 
-        backbone_ckpt = hf_hub_download(
-            model.config["backbone_repo"],
-            "model.safetensors",
-            cache_dir=cache_dir,
-        )
+        backbone_ckpt = os.path.join(model_id, "backbone", "model.safetensors")
         backbone_state = load_file(backbone_ckpt)
         # Backbone repo stores both vision and text encoders — keep only vision_encoder.*.
         backbone_state = {
@@ -1007,23 +999,23 @@ class TIPSv2VisionModel(nn.Module):
         dtype: torch.dtype = torch.float32,
         cache_dir: Optional[str] = None,
     ) -> "TIPSv2VisionModel":
-        """Build the vision encoder and load its weights from the hub.
-
-        Reads ``config.json`` to pick the vision architecture, then loads only the
-        ``vision_encoder.*`` tensors from ``model.safetensors``.
-        """
+        """Build the vision encoder from a local model directory."""
         import json
 
-        from huggingface_hub import hf_hub_download
         from safetensors.torch import load_file
 
-        config_path = hf_hub_download(model_id, "config.json", cache_dir=cache_dir)
+        if not os.path.isdir(model_id):
+            raise FileNotFoundError(
+                "TIPSv2 must be a local directory; automatic downloads are "
+                f"disabled: {model_id}"
+            )
+        config_path = os.path.join(model_id, "config.json")
         with open(config_path) as f:
             config = json.load(f)
 
         model = cls(config)
 
-        ckpt = hf_hub_download(model_id, "model.safetensors", cache_dir=cache_dir)
+        ckpt = os.path.join(model_id, "model.safetensors")
         state = load_file(ckpt)
         # Repo stores vision + text encoders — keep only vision_encoder.*.
         state = {k: v for k, v in state.items() if k.startswith("vision_encoder.")}

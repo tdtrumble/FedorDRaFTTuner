@@ -319,8 +319,7 @@ class FaceSimilarityReward(nn.Module):
         device: str | torch.device | None = None,
     ):
         super().__init__()
-        # resolve + auto-download antelopev2 (toolkit addition; the vendored
-        # source used a fixed relative default instead)
+        # Resolve only local antelopev2 files; this fork never downloads models.
         self.model_dir = ensure_face_models(
             locate_face_model_dir(Path(model_dir) if model_dir else None)
         )

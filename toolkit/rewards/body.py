@@ -14,10 +14,9 @@ Pipeline:
 Pose parameters are discarded by design: only body identity (build /
 proportions / height) is rewarded, never the pose in the image.
 
-SAM 3D Body code is vendored via a git clone at <toolkit>/repositories/
-sam-3d-body (no pip package exists). Its checkpoints are GATED on Hugging
-Face -- request access to facebook/sam-3d-body-vith (or -dinov3) and run
-`hf auth login`, after which the checkpoint auto-downloads on first use.
+SAM 3D Body code is installed manually at <toolkit>/repositories/sam-3d-body
+(no pip package exists). Its gated checkpoint must also be downloaded before
+training and supplied with ``sam3d_checkpoint_path``.
 When the checkpoint (or a gradient path) is unavailable the reward degrades
 gracefully: it returns a zero-gradient penalty term so face-only training
 continues, and warns once.
@@ -54,30 +53,17 @@ def _ensure_sam3d_importable():
         ) from exc
 
 
-def _resolve_checkpoint(
-    checkpoint_path: Optional[str], hf_repo: str
-) -> tuple[str, str]:
-    """Resolve (model.ckpt, mhr_model.pt) locally or via the HF hub (gated)."""
-    if checkpoint_path:
-        ckpt = Path(checkpoint_path)
-        mhr = ckpt.parent / "assets" / "mhr_model.pt"
-        if not ckpt.is_file():
-            raise FileNotFoundError(ckpt)
-        if not mhr.is_file():
-            raise FileNotFoundError(mhr)
-        return str(ckpt), str(mhr)
-
-    local = TOOLKIT_ROOT / "models" / hf_repo.split("/")[-1]
-    if (local / "model.ckpt").is_file() and (local / "assets" / "mhr_model.pt").is_file():
-        return str(local / "model.ckpt"), str(local / "assets" / "mhr_model.pt")
-
-    from huggingface_hub import snapshot_download
-
-    local_dir = snapshot_download(repo_id=hf_repo, token=os.getenv("HF_TOKEN", None))
-    return (
-        os.path.join(local_dir, "model.ckpt"),
-        os.path.join(local_dir, "assets", "mhr_model.pt"),
-    )
+def _resolve_checkpoint(checkpoint_path: Optional[str]) -> tuple[str, str]:
+    """Resolve the manually downloaded model.ckpt and mhr_model.pt."""
+    if not checkpoint_path:
+        raise ValueError("sam3d_checkpoint_path is required when body_weight is non-zero")
+    ckpt = Path(checkpoint_path)
+    mhr = ckpt.parent / "assets" / "mhr_model.pt"
+    if not ckpt.is_file():
+        raise FileNotFoundError(ckpt)
+    if not mhr.is_file():
+        raise FileNotFoundError(mhr)
+    return str(ckpt), str(mhr)
 
 
 def _reference_paths(reference_images) -> list[Path]:
@@ -133,7 +119,6 @@ class BodyGeometryReward(nn.Module):
         self,
         reference_images=None,
         sam3d_checkpoint_path: Optional[str] = None,
-        sam3d_hf_repo: str = "facebook/sam-3d-body-vith",
         loss_tier: str = "somax",  # "somax" (tier 1) or "shape_params" (tier 2)
         target_distance: float = 0.010,  # meters of mean canonical-vertex error
         saturation_temperature: float = 0.005,
@@ -141,6 +126,7 @@ class BodyGeometryReward(nn.Module):
         shape_saturation_temperature: float = 0.10,
         no_person_penalty: float = 0.25,
         soma_lod: str = "low",
+        soma_data_root: Optional[str] = None,
         device: str | torch.device | None = None,
     ):
         super().__init__()
@@ -153,6 +139,7 @@ class BodyGeometryReward(nn.Module):
         self.shape_saturation_temperature = float(shape_saturation_temperature)
         self.no_person_penalty = float(no_person_penalty)
         self.soma_lod = soma_lod
+        self.soma_data_root = soma_data_root
         self.device = torch.device(
             device
             if device is not None
@@ -166,7 +153,7 @@ class BodyGeometryReward(nn.Module):
         _ensure_sam3d_importable()
         from sam_3d_body import SAM3DBodyEstimator, load_sam_3d_body
 
-        ckpt_path, mhr_path = _resolve_checkpoint(sam3d_checkpoint_path, sam3d_hf_repo)
+        ckpt_path, mhr_path = _resolve_checkpoint(sam3d_checkpoint_path)
         self.model, self.cfg = load_sam_3d_body(
             checkpoint_path=ckpt_path, device=str(self.device), mhr_path=mhr_path
         )
@@ -236,7 +223,14 @@ class BodyGeometryReward(nn.Module):
             try:
                 from soma import SOMALayer
 
+                if not self.soma_data_root:
+                    raise ValueError(
+                        "soma_data_root is required for loss_tier=somax; clone "
+                        "SOMA-X with Git LFS and point to its assets directory"
+                    )
+
                 self._soma_layer = SOMALayer(
+                    data_root=self.soma_data_root,
                     device=self.device,
                     identity_model_type="mhr",
                     lod=self.soma_lod,

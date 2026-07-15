@@ -13,7 +13,6 @@ from torchao.quantization.quant_api import (
 from optimum.quanto import freeze
 from tqdm import tqdm
 from safetensors.torch import load_file
-from huggingface_hub import hf_hub_download
 
 from toolkit.print import print_acc
 from toolkit.util.ostris_quant import (
@@ -246,25 +245,13 @@ def quantize_model(
         from toolkit.lora_special import LoRASpecialNetwork
 
         # we need to load and quantize with an accuracy recovery adapter
-        # todo handle hf repos
         load_lora_path = base_model.model_config.accuracy_recovery_adapter
 
         if not os.path.exists(load_lora_path):
-            # not local file, grab from the hub
-
-            path_split = load_lora_path.split("/")
-            if len(path_split) > 3:
-                raise ValueError(
-                    "The accuracy recovery adapter path must be a local path or for a hf repo, 'username/repo_name/filename.safetensors'."
-                )
-            repo_id = f"{path_split[0]}/{path_split[1]}"
-            print_acc(f"Grabbing lora from the hub: {load_lora_path}")
-            new_lora_path = hf_hub_download(
-                repo_id,
-                filename=path_split[-1],
+            raise FileNotFoundError(
+                "accuracy_recovery_adapter must be a local file; automatic "
+                f"downloads are disabled: {load_lora_path}"
             )
-            # replace the path
-            load_lora_path = new_lora_path
 
         # build the lora config based on the lora weights
         lora_state_dict = load_file(load_lora_path)
