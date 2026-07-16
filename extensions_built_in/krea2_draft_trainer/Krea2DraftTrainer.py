@@ -28,9 +28,14 @@ Config (all under the process dict):
                             # adapter tensor (LoRA and LoKr alike)
     save_images_every: 10   # dump reward images to <save>/draft_step_images
     save_every: 10          # checkpoint every N DRaFT steps
+    sample_every: 10        # fixed-prompt samples after every N updates
+    sample_width: 768       # defaults to draft.width when omitted
+    sample_height: 768      # defaults to draft.height when omitted
     prompts:                # explicit prompt list, or...
       - "tok portrait photo, natural light"
     prompts_path: null      # ...a txt file (one prompt per line)
+    sample_prompts_path: null  # separate fixed validation prompt file
+    sample_seed: 1000       # fixed seed base; prompt index is added
     reward:
       reference_images: "path/to/reference/images"
       face_weight: 1.0
@@ -59,6 +64,7 @@ from toolkit.prompt_utils import PromptEmbeds
 from toolkit.rewards import build_reward_from_config
 from toolkit.accelerator import unwrap_model
 from toolkit.print import print_acc
+from toolkit.progress_bar import ToolkitProgressBar
 from toolkit.draft_config import normalize_process_config
 
 QKVO_TAILS = {"wq", "wk", "wv", "wo"}
@@ -93,6 +99,8 @@ class Krea2DraftTrainer(SDTrainer):
         self.draft_guidance_scale = float(draft.get("guidance_scale", 4.5))
         self.draft_width = int(draft.get("width", 512))
         self.draft_height = int(draft.get("height", 512))
+        self.draft_sample_width = int(draft.get("sample_width", self.draft_width))
+        self.draft_sample_height = int(draft.get("sample_height", self.draft_height))
         self.draft_lv_samples = int(draft.get("lv_samples", 0))
         self.draft_high_noise_shift = float(draft.get("high_noise_shift", 0.5))
         self.draft_seed = int(draft.get("seed", 42))
@@ -102,9 +110,14 @@ class Krea2DraftTrainer(SDTrainer):
             raise ValueError("draft.train_modules must be 'qkvo' or 'all'")
         self.draft_save_images_every = int(draft.get("save_images_every", 10))
         self.draft_save_every = int(draft.get("save_every", 10))
+        self.draft_sample_every = int(draft.get("sample_every", 0))
+        if self.draft_sample_every < 0:
+            raise ValueError("draft.sample_every must be zero or a positive integer")
+        self.draft_sample_seed = int(draft.get("sample_seed", self.draft_seed))
         self._draft_save_after_step = 0
         self._draft_prompts_conf = draft.get("prompts", None)
         self._draft_prompts_path = draft.get("prompts_path", None)
+        self._sample_prompts_path = draft.get("sample_prompts_path", None)
         self._draft_reward_conf = draft.get("reward", {}) or {}
         if self.draft_k < 1 or self.draft_k > self.draft_steps:
             raise ValueError("draft.draft_k must be in [1, draft.steps]")
@@ -112,6 +125,9 @@ class Krea2DraftTrainer(SDTrainer):
         self.reward_fn = None
         self.draft_prompts: List[str] = []
         self._draft_embeds: List[torch.Tensor] = []
+        self.sample_prompts: List[str] = []
+        self._sample_embeds: List[torch.Tensor] = []
+        self._last_sampled_step: int | None = None
         self._prompt_cursor = 0
         # A configured adapter is always the exact starting point for this
         # invocation. Do not implicitly resume weights or optimizer state from
@@ -187,20 +203,38 @@ class Krea2DraftTrainer(SDTrainer):
     # ------------------------------------------------------------------
     # Prompt + reward setup
     # ------------------------------------------------------------------
-    def _resolve_draft_prompts(self) -> List[str]:
+    def _resolve_prompts(self, configured, path, label: str) -> List[str]:
         prompts: List[str] = []
-        if self._draft_prompts_conf:
-            prompts = [str(p) for p in self._draft_prompts_conf]
-        elif self._draft_prompts_path and os.path.exists(self._draft_prompts_path):
-            with open(self._draft_prompts_path, "r", encoding="utf-8") as f:
-                prompts = [line.strip() for line in f if line.strip()]
+        if configured:
+            prompts = [str(p).strip() for p in configured if str(p).strip()]
+        elif path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                prompts = [
+                    line.strip()
+                    for line in f
+                    if line.strip() and not line.lstrip().startswith("#")
+                ]
         if not prompts:
-            raise ValueError(
-                "no DRaFT prompts: set draft.prompts or draft.prompts_path"
-            )
+            raise ValueError(f"no {label} prompts were found")
         if self.trigger_word is not None:
             prompts = [p.replace("[trigger]", self.trigger_word) for p in prompts]
         return prompts
+
+    def _resolve_draft_prompts(self) -> List[str]:
+        return self._resolve_prompts(
+            self._draft_prompts_conf,
+            self._draft_prompts_path,
+            "DRaFT training",
+        )
+
+    def _resolve_sample_prompts(self) -> List[str]:
+        if self.draft_sample_every <= 0:
+            return []
+        return self._resolve_prompts(
+            None,
+            self._sample_prompts_path,
+            "checkpoint sampling",
+        )
 
     def _resolve_draft_save_after_step(self) -> int:
         return int(self.start_step)
@@ -232,6 +266,7 @@ class Krea2DraftTrainer(SDTrainer):
     def end_step_hook(self):
         super().end_step_hook()
         self._maybe_draft_save()
+        self._maybe_checkpoint_sample()
 
     def hook_before_train_loop(self):
         # caches self.unconditional_embeds (train.unconditional_prompt) and
@@ -248,16 +283,37 @@ class Krea2DraftTrainer(SDTrainer):
             )
 
         self.draft_prompts = self._resolve_draft_prompts()
-        print_acc(f"draft: {len(self.draft_prompts)} reward prompt(s)")
+        self.sample_prompts = self._resolve_sample_prompts()
+        print_acc(
+            f"draft: {len(self.draft_prompts)} training reward prompt(s); "
+            "one prompt per batch item is selected in round-robin order"
+        )
+        print_acc(
+            f"draft: batch_size={self.train_config.batch_size}, "
+            f"gradient_accumulation={self.train_config.gradient_accumulation}, "
+            f"effective prompt batch="
+            f"{self.train_config.batch_size * self.train_config.gradient_accumulation}"
+        )
+        if self.sample_prompts:
+            print_acc(
+                f"draft: {len(self.sample_prompts)} fixed checkpoint sampling "
+                f"prompt(s), sampling every {self.draft_sample_every} update(s)"
+            )
 
         # encode every DRaFT prompt once; each entry is a (L, F) cpu tensor in
         # the krea2 flattened stacked-layer format (see pad_text_features)
         self._draft_embeds = []
+        self._sample_embeds = []
         with torch.no_grad():
             self.sd.text_encoder_to(self.device_torch)
             for prompt in self.draft_prompts:
                 embeds: PromptEmbeds = self.sd.encode_prompt([prompt])
                 self._draft_embeds.append(
+                    embeds.text_embeds[0].detach().to("cpu")
+                )
+            for prompt in self.sample_prompts:
+                embeds = self.sd.encode_prompt([prompt])
+                self._sample_embeds.append(
                     embeds.text_embeds[0].detach().to("cpu")
                 )
             # blank/negative embeds were cached by super(); free the encoder
@@ -281,6 +337,99 @@ class Krea2DraftTrainer(SDTrainer):
         rng.shuffle(order)
         self.draft_prompts = [self.draft_prompts[i] for i in order]
         self._draft_embeds = [self._draft_embeds[i] for i in order]
+
+    def _is_checkpoint_sample_step(self) -> bool:
+        if self.draft_sample_every <= 0 or self.step_num <= 0:
+            return False
+        # Always show the final updated adapter, even when the requested
+        # interval does not divide train.steps evenly.
+        final_step = self.step_num >= int(self.train_config.steps)
+        return final_step or self.step_num % self.draft_sample_every == 0
+
+    @torch.no_grad()
+    def _sample_checkpoint_image(self, embed: torch.Tensor, seed: int) -> torch.Tensor:
+        """Generate one image with the current post-update adapter weights."""
+        device = self.device_torch
+        dtype = self.sd.torch_dtype
+        latent_h = self.draft_sample_height // self.sd.vae_scale_factor
+        latent_w = self.draft_sample_width // self.sd.vae_scale_factor
+        generator = torch.Generator(device=device).manual_seed(seed)
+        latents = torch.randn(
+            1,
+            16,
+            latent_h,
+            latent_w,
+            device=device,
+            dtype=torch.float32,
+            generator=generator,
+        )
+
+        cond, cond_mask = pad_text_features([embed], device, dtype)
+        guidance = max(0.0, self.draft_guidance_scale - 1.0)
+        uncond = uncond_mask = None
+        if guidance > 0 and self.unconditional_embeds is not None:
+            un = list(self.unconditional_embeds.text_embeds)
+            uncond, uncond_mask = pad_text_features(un[:1], device, dtype)
+
+        ts = self._schedule(latent_h, latent_w)
+        for tcurr, tprev in zip(ts[:-1], ts[1:]):
+            t = torch.full((1,), tcurr, dtype=dtype, device=device)
+            velocity = self._cfg_velocity(
+                latents, t, cond, cond_mask, uncond, uncond_mask, guidance
+            )
+            latents = latents + (tprev - tcurr) * velocity.to(torch.float32)
+
+        return self.sd.decode_latents(
+            latents.to(dtype), device=device, dtype=dtype
+        ).clamp(-1, 1)
+
+    def _maybe_checkpoint_sample(self):
+        if not self._is_checkpoint_sample_step():
+            return
+        if self._last_sampled_step == self.step_num:
+            return
+        if not self.accelerator.is_main_process:
+            return
+
+        from torchvision.transforms import functional as TF
+
+        sample_dir = os.path.join(self.save_root, "checkpoint_samples")
+        os.makedirs(sample_dir, exist_ok=True)
+        if self.progress_bar is not None:
+            self.progress_bar.pause()
+        print_acc(
+            f"\nSampling {len(self.sample_prompts)} fixed prompt(s) with "
+            f"post-update weights at step {self.step_num}"
+        )
+
+        model = unwrap_model(self.sd.unet)
+        was_training = model.training
+        model.eval()
+        sample_progress = ToolkitProgressBar(
+            total=len(self._sample_embeds),
+            desc=f"Sampling weights {self.step_num}",
+            unit="prompt",
+            leave=False,
+        )
+        try:
+            for prompt_index, embed in enumerate(self._sample_embeds):
+                seed = self.draft_sample_seed + prompt_index
+                image = self._sample_checkpoint_image(embed, seed)[0]
+                image = ((image.detach().float().cpu() + 1.0) * 0.5).clamp(0, 1)
+                filename = (
+                    f"weights_{self.step_num:06d}_prompt_{prompt_index:03d}_"
+                    f"seed_{seed}.jpg"
+                )
+                TF.to_pil_image(image).save(os.path.join(sample_dir, filename))
+                del image
+                flush()
+                sample_progress.update(1)
+        finally:
+            sample_progress.close()
+            model.train(was_training)
+            if self.progress_bar is not None:
+                self.progress_bar.unpause()
+        self._last_sampled_step = self.step_num
 
     # ------------------------------------------------------------------
     # Differentiable sampling (ported draft_sample_images)
@@ -423,8 +572,6 @@ class Krea2DraftTrainer(SDTrainer):
             pil = TF.to_pil_image(image)
             stem = f"step_{self.step_num:06d}_{idx:02d}"
             pil.save(os.path.join(sample_dir, f"{stem}.jpg"))
-            with open(os.path.join(sample_dir, f"{stem}.txt"), "w", encoding="utf-8") as f:
-                f.write((prompts[idx] if idx < len(prompts) else "") + "\n")
 
     # ------------------------------------------------------------------
     # Train loop
@@ -434,7 +581,8 @@ class Krea2DraftTrainer(SDTrainer):
     ):
         # the DRaFT stage generates its own data -- dataset batches (if any
         # were configured) are intentionally ignored
-        self.optimizer.zero_grad()
+        del batch
+        self.optimizer.zero_grad(set_to_none=True)
 
         network = unwrap_model(self.network) if self.network is not None else None
         if network is not None:
@@ -442,66 +590,85 @@ class Krea2DraftTrainer(SDTrainer):
             network.multiplier = 1.0
             network._update_torch_multiplier()
 
-        bsz = max(1, self.train_config.batch_size)
+        bsz = max(1, int(self.train_config.batch_size))
+        accumulation = max(1, int(self.train_config.gradient_accumulation))
         n = len(self.draft_prompts)
-        idxs = [(self._prompt_cursor + i) % n for i in range(bsz)]
-        self._prompt_cursor = (self._prompt_cursor + bsz) % n
-        prompts = [self.draft_prompts[i] for i in idxs]
-        embeds = [self._draft_embeds[i] for i in idxs]
+        save_reward_images = (
+            self.draft_save_images_every > 0
+            and self.step_num % self.draft_save_images_every == 0
+        )
+        saved_images = []
+        saved_prompts: List[str] = []
+        micro_losses = []
+        micro_rewards = []
+        component_values: dict[str, list[float]] = {}
 
-        with self.timer("draft_sample"):
-            images = self.draft_sample_images(
-                embeds, seed=self.draft_seed + self.step_num
-            )
-        # DRaFT-LV extras reuse the same prompt list
-        reps = images.shape[0] // len(prompts)
-        full_prompts = prompts * reps
+        for microbatch in range(accumulation):
+            idxs = [(self._prompt_cursor + i) % n for i in range(bsz)]
+            self._prompt_cursor = (self._prompt_cursor + bsz) % n
+            prompts = [self.draft_prompts[i] for i in idxs]
+            embeds = [self._draft_embeds[i] for i in idxs]
+            seed = self.draft_seed + self.step_num * accumulation + microbatch
 
-        with self.timer("draft_reward"):
-            loss, rewards = self._reward_loss(images, full_prompts)
+            with self.timer("draft_sample"):
+                images = self.draft_sample_images(embeds, seed=seed)
+            # DRaFT-LV extras reuse the same prompt list.
+            reps = images.shape[0] // len(prompts)
+            full_prompts = prompts * reps
 
-        with self.timer("draft_backward"):
-            self.accelerator.backward(loss)
+            with self.timer("draft_reward"):
+                loss, rewards = self._reward_loss(images, full_prompts)
 
-        if not self.is_grad_accumulation_step:
-            if self.train_config.optimizer != "adafactor":
-                if len(self.params) > 0 and isinstance(self.params[0], dict):
-                    for group in self.params:
-                        self.accelerator.clip_grad_norm_(
-                            group["params"], self.train_config.max_grad_norm
-                        )
-                else:
+            components = getattr(self.reward_fn, "last_components", None)
+            if components:
+                for key, value in components.items():
+                    component_values.setdefault(key, []).append(float(value))
+            micro_losses.append(float(loss.detach()))
+            micro_rewards.append(rewards.detach().float().cpu())
+            if save_reward_images:
+                saved_images.append(images.detach().float().cpu())
+                saved_prompts.extend(full_prompts)
+
+            with self.timer("draft_backward"):
+                self.accelerator.backward(loss / accumulation)
+
+            del images, loss, rewards
+            flush()
+
+        if self.train_config.optimizer != "adafactor":
+            if len(self.params) > 0 and isinstance(self.params[0], dict):
+                for group in self.params:
                     self.accelerator.clip_grad_norm_(
-                        self.params, self.train_config.max_grad_norm
+                        group["params"], self.train_config.max_grad_norm
                     )
-            with self.timer("optimizer_step"):
-                self.optimizer.step()
-                self.optimizer.zero_grad(set_to_none=True)
-            if self.ema is not None:
-                with self.timer("ema_update"):
-                    self.ema.update()
+            else:
+                self.accelerator.clip_grad_norm_(
+                    self.params, self.train_config.max_grad_norm
+                )
+        with self.timer("optimizer_step"):
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+        if self.ema is not None:
+            with self.timer("ema_update"):
+                self.ema.update()
 
         with self.timer("scheduler_step"):
             self.lr_scheduler.step()
 
-        if (
-            self.draft_save_images_every > 0
-            and self.step_num % self.draft_save_images_every == 0
-        ):
-            self._save_step_images(images, full_prompts)
+        if saved_images:
+            self._save_step_images(torch.cat(saved_images, dim=0), saved_prompts)
 
+        all_rewards = torch.cat(micro_rewards)
         loss_dict = OrderedDict(
             {
-                "loss": loss.item(),
-                "reward": rewards.mean().item(),
+                "loss": sum(micro_losses) / len(micro_losses),
+                "reward": all_rewards.mean().item(),
             }
         )
-        components = getattr(self.reward_fn, "last_components", None)
-        if components:
-            for key, value in components.items():
-                loss_dict[f"rw_{key}"] = value
+        for key, values in component_values.items():
+            loss_dict[f"rw_{key}"] = sum(values) / len(values)
 
-        del images
+        del all_rewards, micro_rewards, saved_images
         flush()
 
         self.end_of_training_loop()

@@ -17,6 +17,8 @@ pydantic
 omegaconf
 k-diffusion
 prodigyopt
+timm
+open_clip_torch
 python-dotenv
 bitsandbytes
 lpips

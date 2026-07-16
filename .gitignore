@@ -1,8 +1,11 @@
+#testing files
+temp_prompt.txt
+0_*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-temp_prompt.txt
 
 # C extensions
 *.so

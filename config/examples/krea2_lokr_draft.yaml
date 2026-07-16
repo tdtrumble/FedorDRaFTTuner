@@ -41,6 +41,13 @@ config:
         train_modules: qkvo
         save_images_every: 5
         save_every: 5
+        # Fixed validation prompts and seeds are sampled after updated
+        # checkpoints 5, 10, ... and after the final update.
+        sample_every: 5
+        sample_width: 768
+        sample_height: 768
+        sample_prompts_path: config/examples/prompts/body_match_sample.txt
+        sample_seed: 1000
         # Fixed prompt pool designed to expose body proportions while keeping
         # the face visible for the combined face + body reward.
         prompts_path: config/examples/prompts/body_match.txt
